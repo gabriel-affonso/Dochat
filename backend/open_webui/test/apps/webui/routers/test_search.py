@@ -283,3 +283,74 @@ def test_get_document_search_sources_includes_markdown_transcriptions(monkeypatc
         source["origin"] == "markdown" and "Orquidea rara" in source["text"]
         for source in sources
     )
+
+
+def test_unified_search_is_accent_insensitive_for_document_content(monkeypatch):
+    fake_user = SimpleNamespace(id="user-1", role="user")
+    fake_file = SimpleNamespace(
+        id="file-1",
+        user_id="user-1",
+        hash="hash-1",
+        filename="transcritor.md",
+        path="/tmp/transcritor.md",
+        data={"content": "O sistema faz a gravação do audio automaticamente."},
+        meta={"name": "Transcritor", "content_type": "text/markdown"},
+        is_archived=False,
+        archived_at=None,
+        created_at=1_710_000_040,
+        updated_at=1_710_000_050,
+    )
+
+    monkeypatch.setattr(
+        search_router.Chats,
+        "get_chats_by_user_id",
+        lambda *args, **kwargs: SimpleNamespace(items=[]),
+    )
+    monkeypatch.setattr(
+        search_router.Notes,
+        "get_notes_by_user_id",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        search_router,
+        "_build_note_collections_map",
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr(
+        search_router,
+        "collect_accessible_documents",
+        lambda *args, **kwargs: [{"file": fake_file, "collections": []}],
+    )
+    monkeypatch.setattr(
+        search_router,
+        "_get_document_search_sources",
+        lambda *args, **kwargs: [
+            {
+                "text": "O sistema faz a gravação do audio automaticamente.",
+                "metadata": {"chunk_index": 0},
+                "origin": "content",
+            }
+        ],
+    )
+
+    response = asyncio.run(
+        search_router.unified_search(
+            request=_make_request(),
+            query="gravacao",
+            type="document",
+            date_from=None,
+            date_to=None,
+            collection=None,
+            tags=None,
+            source=None,
+            archived=None,
+            pinned=None,
+            page=1,
+            limit=20,
+            user=fake_user,
+            db=None,
+        )
+    )
+
+    assert response.total == 1
+    assert response.items[0].occurrences[0].matched_text == "gravação"

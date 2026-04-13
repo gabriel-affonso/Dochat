@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -90,13 +91,13 @@ def _match_score(query: Optional[str], *values: str) -> float:
     if not query:
         return 0.0
 
-    query_key = query.lower().strip()
+    query_key = _normalize_search_text(query)[0].strip()
     if not query_key:
         return 0.0
 
     best = 0.0
     for idx, value in enumerate(values):
-        haystack = (value or "").lower()
+        haystack = _normalize_search_text(value)[0]
         if not haystack:
             continue
         if haystack == query_key:
@@ -138,6 +139,22 @@ def _build_occurrence_id(prefix: str, *parts) -> str:
     return ":".join(values)
 
 
+def _normalize_search_text(value: Optional[str]) -> tuple[str, list[int]]:
+    text = value or ""
+    normalized_chars: list[str] = []
+    index_map: list[int] = []
+
+    for index, character in enumerate(text):
+        decomposed = unicodedata.normalize("NFKD", character)
+        for normalized_character in decomposed:
+            if unicodedata.combining(normalized_character):
+                continue
+            normalized_chars.append(normalized_character.lower())
+            index_map.append(index)
+
+    return "".join(normalized_chars), index_map
+
+
 def _find_text_occurrences(
     text: str,
     query: Optional[str],
@@ -149,24 +166,31 @@ def _find_text_occurrences(
     updated_at: Optional[int] = None,
     is_archived: Optional[bool] = None,
 ) -> list[SearchOccurrenceResponse]:
-    normalized_text = text or ""
-    if not query or not normalized_text:
+    original_text = text or ""
+    if not query or not original_text:
         return []
 
-    pattern = re.compile(re.escape(query), re.IGNORECASE)
+    normalized_text, index_map = _normalize_search_text(original_text)
+    normalized_query, _ = _normalize_search_text(query)
+    if not normalized_text or not normalized_query:
+        return []
+
+    pattern = re.compile(re.escape(normalized_query), re.IGNORECASE)
     occurrences = []
     for index, match in enumerate(pattern.finditer(normalized_text)):
         start, end = match.span()
+        original_start = index_map[start]
+        original_end = index_map[end - 1] + 1
         occurrences.append(
             SearchOccurrenceResponse(
                 id=_build_occurrence_id(occurrence_prefix, index, start, end),
-                snippet=_snippet_from_text(normalized_text, start, end),
-                matched_text=normalized_text[start:end],
+                snippet=_snippet_from_text(original_text, original_start, original_end),
+                matched_text=original_text[original_start:original_end],
                 location=location,
                 page=page,
                 message_id=message_id,
-                start=start,
-                end=end,
+                start=original_start,
+                end=original_end,
                 updated_at=updated_at,
                 is_archived=is_archived,
             )
@@ -182,20 +206,24 @@ def _build_title_occurrence(
     updated_at: Optional[int] = None,
     is_archived: Optional[bool] = None,
 ) -> list[SearchOccurrenceResponse]:
-    if not query or query.lower() not in (title or "").lower():
+    normalized_title, index_map = _normalize_search_text(title or "")
+    normalized_query, _ = _normalize_search_text(query)
+    if not normalized_query or normalized_query not in normalized_title:
         return []
-    start = title.lower().find(query.lower())
-    end = start + len(query)
+    start = normalized_title.find(normalized_query)
+    end = start + len(normalized_query)
+    original_start = index_map[start]
+    original_end = index_map[end - 1] + 1
     return [
         SearchOccurrenceResponse(
-            id=_build_occurrence_id(prefix, "title", start, end),
+            id=_build_occurrence_id(prefix, "title", original_start, original_end),
             snippet=title,
-            matched_text=title[start:end],
+            matched_text=title[original_start:original_end],
             location="titulo",
             updated_at=updated_at,
             is_archived=is_archived,
-            start=start,
-            end=end,
+            start=original_start,
+            end=original_end,
         )
     ]
 

@@ -4,6 +4,25 @@ export type HighlightSegment = {
 };
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const COMBINING_MARKS_RE = /[\u0300-\u036f]/g;
+
+const normalizeForSearch = (value: string) => {
+	const normalizedChars: string[] = [];
+	const indexMap: number[] = [];
+
+	for (let index = 0; index < value.length; index += 1) {
+		const normalizedChunk = value[index].normalize('NFD').replace(COMBINING_MARKS_RE, '').toLowerCase();
+		for (const character of normalizedChunk) {
+			normalizedChars.push(character);
+			indexMap.push(index);
+		}
+	}
+
+	return {
+		text: normalizedChars.join(''),
+		indexMap
+	};
+};
 
 export const splitHighlightedText = (
 	value: string | null | undefined,
@@ -16,13 +35,21 @@ export const splitHighlightedText = (
 		return [{ text, match: false }];
 	}
 
-	const pattern = new RegExp(escapeRegExp(needle), 'gi');
+	const normalizedText = normalizeForSearch(text);
+	const normalizedNeedle = normalizeForSearch(needle).text;
+	if (!normalizedNeedle) {
+		return [{ text, match: false }];
+	}
+
+	const pattern = new RegExp(escapeRegExp(normalizedNeedle), 'gi');
 	const segments: HighlightSegment[] = [];
 	let cursor = 0;
 
-	for (const match of text.matchAll(pattern)) {
-		const start = match.index ?? 0;
-		const end = start + match[0].length;
+	for (const match of normalizedText.text.matchAll(pattern)) {
+		const normalizedStart = match.index ?? 0;
+		const normalizedEnd = normalizedStart + match[0].length;
+		const start = normalizedText.indexMap[normalizedStart];
+		const end = normalizedText.indexMap[normalizedEnd - 1] + 1;
 
 		if (start > cursor) {
 			segments.push({ text: text.slice(cursor, start), match: false });
