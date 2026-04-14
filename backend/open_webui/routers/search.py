@@ -30,6 +30,7 @@ from open_webui.utils.dochat_documents import (
 )
 
 router = APIRouter()
+MAX_OCCURRENCES_PER_RESULT = 120
 
 
 class SearchOccurrenceResponse(BaseModel):
@@ -226,6 +227,17 @@ def _build_title_occurrence(
             end=original_end,
         )
     ]
+
+
+def _limit_result_occurrences(
+    occurrences: list[SearchOccurrenceResponse],
+    *,
+    limit: int = MAX_OCCURRENCES_PER_RESULT,
+) -> tuple[list[SearchOccurrenceResponse], int]:
+    total = len(occurrences)
+    if total <= limit:
+        return occurrences, total
+    return occurrences[:limit], total
 
 
 def _flatten_searchable_metadata(
@@ -673,6 +685,8 @@ async def unified_search(
                 if query and score == 0 and not occurrences:
                     continue
 
+                occurrences, occurrence_count = _limit_result_occurrences(occurrences)
+
                 snippet = (
                     occurrences[0].snippet
                     if occurrences
@@ -710,7 +724,7 @@ async def unified_search(
                             "document_context": document_context,
                             "meta": chat_meta,
                         },
-                        occurrence_count=len(occurrences),
+                        occurrence_count=occurrence_count,
                         occurrences=occurrences,
                     )
                 )
@@ -798,6 +812,8 @@ async def unified_search(
                 if query and score == 0 and not occurrences:
                     continue
 
+                occurrences, occurrence_count = _limit_result_occurrences(occurrences)
+
                 results.append(
                     SearchResultResponse(
                         id=note.id,
@@ -820,7 +836,7 @@ async def unified_search(
                             "linked_collections": linked_collections,
                             "meta": note_meta,
                         },
-                        occurrence_count=len(occurrences),
+                        occurrence_count=occurrence_count,
                         occurrences=occurrences,
                     )
                 )
@@ -960,6 +976,8 @@ async def unified_search(
                 if query and score == 0 and not occurrences:
                     continue
 
+                occurrences, occurrence_count = _limit_result_occurrences(occurrences)
+
                 results.append(
                     SearchResultResponse(
                         id=document["id"],
@@ -997,7 +1015,7 @@ async def unified_search(
                                 for source_entry in document_sources[:24]
                             ],
                         },
-                        occurrence_count=len(occurrences),
+                        occurrence_count=occurrence_count,
                         occurrences=occurrences,
                     )
                 )

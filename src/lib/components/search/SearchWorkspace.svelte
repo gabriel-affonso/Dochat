@@ -94,6 +94,7 @@
 	let loading = false;
 	let query = '';
 	let searchDebounceTimer: ReturnType<typeof setTimeout>;
+	let activeSearchRequest = 0;
 
 	let typeFilter = 'all';
 	let archiveFilter = 'all';
@@ -302,6 +303,7 @@
 	const loadResults = async () => {
 		if (!loaded) return;
 
+		const requestId = ++activeSearchRequest;
 		loading = true;
 		let res = null;
 
@@ -324,6 +326,10 @@
 
 			return await loadFallbackResults().catch(() => null);
 		});
+
+		if (requestId !== activeSearchRequest) {
+			return;
+		}
 
 		resultGroups = res?.items ?? [];
 		total = res?.total ?? resultGroups.length;
@@ -412,6 +418,8 @@
 	};
 
 	const normalizeTags = (result: SearchResult) => (result.tags ?? []).filter(Boolean);
+	const isOccurrenceListTruncated = (result: SearchResult | null | undefined) =>
+		(result?.occurrence_count ?? 0) > (result?.occurrences?.length ?? 0);
 	const getCollections = () =>
 		[
 			...new Set(
@@ -480,8 +488,8 @@
 			<div class="dochat-search-kicker">Pesquisa tranversal</div>
 			<h1>Pesquisa tranversal</h1>
 			<p>
-				Procure palavras ou termos em chats, notas, documentos transcritos em markdown e
-				metadados, com contexto suficiente para seguir direto para o ponto certo.
+				Procure palavras ou termos em chats, notas, documentos transcritos em markdown e metadados,
+				com contexto suficiente para seguir direto para o ponto certo.
 			</p>
 		</div>
 
@@ -690,6 +698,13 @@
 											{/if}
 										</button>
 									{/if}
+
+									{#if expandedResultIds.includes(result.id) && isOccurrenceListTruncated(result)}
+										<div class="dochat-search-occurrence-note">
+											Exibindo as primeiras {result.occurrences.length} de
+											{result.occurrence_count} ocorrencias.
+										</div>
+									{/if}
 								</div>
 							{/if}
 						</div>
@@ -804,6 +819,12 @@
 					{#if selectedResult.occurrences?.length}
 						<div class="dochat-search-detail-occurrences">
 							<div class="dochat-search-detail-section">Ocorrencias</div>
+							{#if isOccurrenceListTruncated(selectedResult)}
+								<div class="dochat-search-occurrence-note">
+									Exibindo as primeiras {selectedResult.occurrences.length} de
+									{selectedResult.occurrence_count} ocorrencias para manter a busca rapida.
+								</div>
+							{/if}
 							{#each selectedResult.occurrences as occurrence}
 								<button
 									type="button"
@@ -1127,6 +1148,12 @@
 	.dochat-search-occurrence-count {
 		color: var(--dochat-accent, #6f8a64);
 		font-weight: 600;
+	}
+
+	.dochat-search-occurrence-note {
+		font-size: 0.76rem;
+		line-height: 1.45;
+		color: var(--dochat-text-faint, #8e8e93);
 	}
 
 	.dochat-search-occurrences {
