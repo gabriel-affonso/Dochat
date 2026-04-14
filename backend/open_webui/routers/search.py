@@ -78,13 +78,38 @@ def _content_to_text(content) -> str:
     if isinstance(content, list):
         chunks = []
         for item in content:
-            if isinstance(item, dict):
-                chunks.append(item.get("text") or item.get("content") or "")
-            else:
-                chunks.append(str(item))
+            chunks.append(_content_to_text(item))
         return " ".join(chunk for chunk in chunks if chunk)
     if isinstance(content, dict):
-        return content.get("text") or content.get("content") or str(content)
+        preferred_keys = (
+            "text",
+            "content",
+            "md",
+            "markdown",
+            "markdown_content",
+            "content_md",
+            "body",
+            "value",
+            "full_text",
+            "extracted_text",
+            "transcript",
+        )
+        chunks = []
+        for key in preferred_keys:
+            if key in content:
+                chunk = _content_to_text(content.get(key))
+                if chunk:
+                    chunks.append(chunk)
+
+        if chunks:
+            return " ".join(chunk for chunk in chunks if chunk)
+
+        flattened_values = []
+        for value in content.values():
+            chunk = _content_to_text(value)
+            if chunk:
+                flattened_values.append(chunk)
+        return " ".join(flattened_values)
     return str(content)
 
 
@@ -121,7 +146,7 @@ def _matches_date(
 
 
 def _compact_text(value: Optional[str]) -> str:
-    return (value or "").replace("\n", " ").replace("\r", " ").strip()
+    return _content_to_text(value).replace("\n", " ").replace("\r", " ").strip()
 
 
 def _snippet_from_text(text: str, start: int, end: int, context: int = 96) -> str:
@@ -375,13 +400,18 @@ def _get_collection_document_chunks(collection_id: str, file_id: str) -> list[tu
 
 def _get_document_markdown_text(file) -> str:
     file_data = _safe_dict(file.data)
+    content_payload = _safe_dict(file_data.get("content"))
+    transcription_payload = _safe_dict(file_data.get("transcription"))
 
     markdown_candidates = [
+        content_payload.get("md"),
+        content_payload.get("markdown"),
+        content_payload.get("markdown_content"),
         file_data.get("markdown"),
         file_data.get("markdown_content"),
         file_data.get("content_md"),
-        _safe_dict(file_data.get("transcription")).get("markdown"),
-        _safe_dict(file_data.get("transcription")).get("md"),
+        transcription_payload.get("markdown"),
+        transcription_payload.get("md"),
     ]
 
     for candidate in markdown_candidates:
@@ -475,7 +505,7 @@ def _ensure_document_content(
     hydrate_missing_text: bool = False,
 ) -> str:
     file_data = _safe_dict(file.data)
-    content = file_data.get("content") or ""
+    content = _compact_text(file_data.get("content"))
     if content or not hydrate_missing_text:
         return content
 

@@ -356,6 +356,75 @@ def test_unified_search_is_accent_insensitive_for_document_content(monkeypatch):
     assert response.items[0].occurrences[0].matched_text == "gravação"
 
 
+def test_unified_search_supports_structured_document_content(monkeypatch):
+    fake_user = SimpleNamespace(id="user-1", role="user")
+    fake_file = SimpleNamespace(
+        id="file-1",
+        user_id="user-1",
+        hash="hash-1",
+        filename="certidao.md",
+        path="/tmp/certidao.md",
+        data={"content": {"md": "José da Silva aparece no documento em markdown."}},
+        meta={"name": "Certidão", "content_type": "text/markdown"},
+        is_archived=False,
+        archived_at=None,
+        created_at=1_710_000_040,
+        updated_at=1_710_000_050,
+    )
+
+    monkeypatch.setattr(
+        search_router.Chats,
+        "get_chats_by_user_id",
+        lambda *args, **kwargs: SimpleNamespace(items=[]),
+    )
+    monkeypatch.setattr(
+        search_router.Notes,
+        "get_notes_by_user_id",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        search_router,
+        "_build_note_collections_map",
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr(
+        search_router,
+        "collect_accessible_documents",
+        lambda *args, **kwargs: [{"file": fake_file, "collections": []}],
+    )
+    monkeypatch.setattr(search_router, "_get_document_chunks", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        search_router,
+        "_get_collection_document_chunks",
+        lambda *args, **kwargs: [],
+    )
+
+    response = asyncio.run(
+        search_router.unified_search(
+            request=_make_request(),
+            query="jose",
+            type="document",
+            date_from=None,
+            date_to=None,
+            collection=None,
+            tags=None,
+            source=None,
+            archived=None,
+            pinned=None,
+            page=1,
+            limit=20,
+            user=fake_user,
+            db=None,
+        )
+    )
+
+    assert response.total == 1
+    assert response.items[0].occurrence_count >= 1
+    assert any(
+        occurrence.matched_text == "José" for occurrence in response.items[0].occurrences
+    )
+
+
 def test_unified_search_limits_large_occurrence_payloads(monkeypatch):
     fake_user = SimpleNamespace(id="user-1", role="user")
     repeated_text = " ".join(["a"] * 200)
