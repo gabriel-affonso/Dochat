@@ -606,6 +606,7 @@ def _build_note_collections_map(user, db: Session) -> dict[str, list[dict]]:
     return note_collections
 
 
+@router.get("", response_model=SearchListResponse, include_in_schema=False)
 @router.get("/", response_model=SearchListResponse)
 async def unified_search(
     request: Request,

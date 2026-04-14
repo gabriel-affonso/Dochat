@@ -31,7 +31,11 @@ export const searchWorkspace = async (token: string = '', params: SearchParams =
 		searchParams.append(key, String(value));
 	});
 
-	const res = await fetch(`${WEBUI_API_BASE_URL}/search?${searchParams.toString()}`, {
+	const path = searchParams.toString()
+		? `${WEBUI_API_BASE_URL}/search/?${searchParams.toString()}`
+		: `${WEBUI_API_BASE_URL}/search/`;
+
+	const res = await fetch(path, {
 		method: 'GET',
 		headers: {
 			Accept: 'application/json',

@@ -95,6 +95,8 @@
 	let query = '';
 	let searchDebounceTimer: ReturnType<typeof setTimeout>;
 	let activeSearchRequest = 0;
+	let fallbackSearchActive = false;
+	let fallbackSearchMessage = '';
 
 	let typeFilter = 'all';
 	let archiveFilter = 'all';
@@ -306,6 +308,8 @@
 		const requestId = ++activeSearchRequest;
 		loading = true;
 		let res = null;
+		let usedFallback = false;
+		let fallbackMessage = '';
 
 		const { date_from, date_to } = getDateRange();
 		res = await searchWorkspace(localStorage.token, {
@@ -320,6 +324,10 @@
 			page: 1,
 			limit: 200
 		}).catch(async () => {
+			usedFallback = true;
+			fallbackMessage =
+				'A busca transversal falhou nesta sessão e a tela usou a busca legada. Em documentos, isso pode limitar os resultados a titulo e descricao.';
+
 			if (!hasActiveSearchState()) {
 				return { items: [], total: 0 };
 			}
@@ -331,6 +339,8 @@
 			return;
 		}
 
+		fallbackSearchActive = usedFallback;
+		fallbackSearchMessage = fallbackMessage;
 		resultGroups = res?.items ?? [];
 		total = res?.total ?? resultGroups.length;
 
@@ -532,6 +542,12 @@
 			<strong>{query ? 'Ocorrencias' : 'Exploracao'}</strong>
 		</div>
 	</section>
+
+	{#if fallbackSearchActive}
+		<div class="dochat-search-warning">
+			{fallbackSearchMessage}
+		</div>
+	{/if}
 
 	<div class="dochat-search-grid">
 		<aside class="dochat-search-panel dochat-search-filters">
@@ -944,6 +960,16 @@
 		display: grid;
 		grid-template-columns: repeat(3, minmax(0, 1fr));
 		gap: 0.85rem;
+	}
+
+	.dochat-search-warning {
+		padding: 0.9rem 1rem;
+		border: 1px solid rgba(192, 164, 87, 0.35);
+		border-radius: 1rem;
+		background: rgba(255, 248, 225, 0.92);
+		color: #73561f;
+		font-size: 0.92rem;
+		line-height: 1.45;
 	}
 
 	.dochat-search-summary-card,

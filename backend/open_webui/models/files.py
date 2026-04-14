@@ -33,6 +33,39 @@ class File(Base):
     updated_at = Column(BigInteger)
 
 
+def _coerce_json_object(
+    value,
+    *,
+    content_key: Optional[str] = None,
+    fallback_key: str = "legacy_value",
+) -> dict:
+    if value is None:
+        return {}
+
+    if isinstance(value, dict):
+        return value
+
+    if isinstance(value, tuple):
+        value = list(value)
+
+    return {(content_key or fallback_key): value}
+
+
+def _sanitize_file_meta(meta) -> dict:
+    normalized_meta = _coerce_json_object(meta)
+
+    content_type = normalized_meta.get("content_type")
+    if isinstance(content_type, list):
+        normalized_meta["content_type"] = next(
+            (item for item in content_type if isinstance(item, str)),
+            None,
+        )
+    elif content_type is not None and not isinstance(content_type, str):
+        normalized_meta["content_type"] = None
+
+    return normalized_meta
+
+
 class FileModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -50,6 +83,19 @@ class FileModel(BaseModel):
 
     created_at: Optional[int]  # timestamp in epoch
     updated_at: Optional[int]  # timestamp in epoch
+
+    @model_validator(mode="before")
+    @classmethod
+    def sanitize_file_payload(cls, data):
+        if not isinstance(data, dict):
+            return data
+
+        normalized = dict(data)
+        normalized["data"] = _coerce_json_object(
+            normalized.get("data"), content_key="content"
+        )
+        normalized["meta"] = _sanitize_file_meta(normalized.get("meta"))
+        return normalized
 
 
 ####################
@@ -100,6 +146,19 @@ class FileModelResponse(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+    @model_validator(mode="before")
+    @classmethod
+    def sanitize_file_response_payload(cls, data):
+        if not isinstance(data, dict):
+            return data
+
+        normalized = dict(data)
+        normalized["data"] = _coerce_json_object(
+            normalized.get("data"), content_key="content"
+        )
+        normalized["meta"] = _sanitize_file_meta(normalized.get("meta"))
+        return normalized
+
 
 class FileMetadataResponse(BaseModel):
     id: str
@@ -132,6 +191,18 @@ class FileListResponse(BaseModel):
 
 
 class FilesTable:
+    @staticmethod
+    def _safe_validate_file(file) -> Optional[FileModel]:
+        try:
+            return FileModel.model_validate(file)
+        except Exception as e:
+            log.warning(
+                "Skipping unreadable file record %s: %s",
+                getattr(file, "id", "<unknown>"),
+                e,
+            )
+            return None
+
     def insert_new_file(
         self, user_id: str, form_data: FileForm, db: Optional[Session] = None
     ) -> Optional[FileModel]:
@@ -211,7 +282,12 @@ class FilesTable:
 
     def get_files(self, db: Optional[Session] = None) -> list[FileModel]:
         with get_db_context(db) as db:
-            return [FileModel.model_validate(file) for file in db.query(File).all()]
+            files = []
+            for file in db.query(File).all():
+                validated = self._safe_validate_file(file)
+                if validated:
+                    files.append(validated)
+            return files
 
     def check_access_by_user_id(
         self, id, user_id, permission="write", db: Optional[Session] = None
@@ -228,13 +304,17 @@ class FilesTable:
         self, ids: list[str], db: Optional[Session] = None
     ) -> list[FileModel]:
         with get_db_context(db) as db:
-            return [
-                FileModel.model_validate(file)
-                for file in db.query(File)
+            files = []
+            for file in (
+                db.query(File)
                 .filter(File.id.in_(ids))
                 .order_by(File.updated_at.desc())
                 .all()
-            ]
+            ):
+                validated = self._safe_validate_file(file)
+                if validated:
+                    files.append(validated)
+            return files
 
     def get_file_metadatas_by_ids(
         self, ids: list[str], db: Optional[Session] = None
@@ -266,10 +346,12 @@ class FilesTable:
             query = db.query(File).filter_by(user_id=user_id)
             if not include_archived:
                 query = query.filter(File.is_archived == False)
-            return [
-                FileModel.model_validate(file)
-                for file in query.order_by(File.updated_at.desc(), File.id.asc()).all()
-            ]
+            files = []
+            for file in query.order_by(File.updated_at.desc(), File.id.asc()).all():
+                validated = self._safe_validate_file(file)
+                if validated:
+                    files.append(validated)
+            return files
 
     @staticmethod
     def _glob_to_like_pattern(glob: str) -> str:
@@ -325,13 +407,17 @@ class FilesTable:
             if pattern != "%":
                 query = query.filter(File.filename.ilike(pattern, escape="\\"))
 
-            return [
-                FileModel.model_validate(file)
-                for file in query.order_by(File.created_at.desc(), File.id.desc())
+            files = []
+            for file in (
+                query.order_by(File.created_at.desc(), File.id.desc())
                 .offset(skip)
                 .limit(limit)
                 .all()
-            ]
+            ):
+                validated = self._safe_validate_file(file)
+                if validated:
+                    files.append(validated)
+            return files
 
     def update_file_by_id(
         self, id: str, form_data: FileUpdateForm, db: Optional[Session] = None
@@ -344,10 +430,16 @@ class FilesTable:
                     file.hash = form_data.hash
 
                 if form_data.data is not None:
-                    file.data = {**(file.data if file.data else {}), **form_data.data}
+                    file.data = {
+                        **_coerce_json_object(file.data, content_key="content"),
+                        **form_data.data,
+                    }
 
                 if form_data.meta is not None:
-                    file.meta = {**(file.meta if file.meta else {}), **form_data.meta}
+                    file.meta = {
+                        **_sanitize_file_meta(file.meta),
+                        **_sanitize_file_meta(form_data.meta),
+                    }
 
                 if form_data.is_archived is not None:
                     file.is_archived = form_data.is_archived
@@ -382,7 +474,10 @@ class FilesTable:
         with get_db_context(db) as db:
             try:
                 file = db.query(File).filter_by(id=id).first()
-                file.data = {**(file.data if file.data else {}), **data}
+                file.data = {
+                    **_coerce_json_object(file.data, content_key="content"),
+                    **data,
+                }
                 file.updated_at = int(time.time())
                 db.commit()
                 return FileModel.model_validate(file)
@@ -397,7 +492,7 @@ class FilesTable:
             try:
                 file = db.query(File).filter_by(id=id).first()
                 file.meta = sanitize_metadata(
-                    {**(file.meta if file.meta else {}), **meta}
+                    {**_sanitize_file_meta(file.meta), **_sanitize_file_meta(meta)}
                 )
                 file.updated_at = int(time.time())
                 db.commit()
