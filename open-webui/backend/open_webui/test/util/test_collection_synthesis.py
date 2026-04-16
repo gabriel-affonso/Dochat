@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from open_webui.models.access_grants import AccessGrantModel
 from open_webui.utils import collection_synthesis
 
 
@@ -142,6 +143,71 @@ class CollectionSynthesisTestCase(unittest.TestCase):
         self.assertIn("<h1>", insert_form.data["content"]["html"])
         self.assertIn("indexacao vetorial", note_warnings[0].lower())
         self.assertIn("300 seconds", note_warnings[0])
+
+    def test_persist_synthesis_note_serializes_access_grants_for_collection_update(self):
+        grant = AccessGrantModel(
+            id="grant-1",
+            resource_type="knowledge",
+            resource_id="kb-1",
+            principal_type="user",
+            principal_id="user-2",
+            permission="read",
+            created_at=1_776_365_960,
+        )
+        collection = SimpleNamespace(
+            id="kb-1",
+            name="Acervo Atlas",
+            description="",
+            meta={},
+            access_grants=[grant],
+        )
+        report_record = SimpleNamespace(
+            id="report-1",
+            note_id=None,
+            model_name="gemma-3-12b",
+            documents_processed=2,
+            documents_failed=0,
+            included_document_ids=["file-1", "file-2"],
+        )
+        user = SimpleNamespace(id="user-1")
+        note = SimpleNamespace(
+            id="note-1",
+            title="Síntese - Acervo Atlas",
+            meta={},
+            data={"content": {"md": ""}},
+            created_at=1_700_000_000,
+            updated_at=1_700_000_000,
+        )
+
+        with patch.object(
+            collection_synthesis.Notes, "insert_new_note", return_value=note
+        ), patch.object(
+            collection_synthesis.Knowledges, "update_knowledge_by_id"
+        ) as mock_update, patch.object(
+            collection_synthesis.Knowledges,
+            "get_knowledge_by_id",
+            return_value=collection,
+        ), patch.object(
+            collection_synthesis, "upsert_linked_note_vector"
+        ):
+            note_id, note_warnings, final_status = collection_synthesis.persist_synthesis_note(
+                request=SimpleNamespace(),
+                collection=collection,
+                report_record=report_record,
+                user=user,
+                report={"overview": "Resumo final."},
+                final_status=collection_synthesis.SYNTHESIS_COMPLETED_STATUS,
+                warnings=[],
+            )
+
+        update_form = mock_update.call_args.kwargs["form_data"]
+        self.assertEqual(note_id, "note-1")
+        self.assertEqual(note_warnings, [])
+        self.assertEqual(final_status, collection_synthesis.SYNTHESIS_COMPLETED_STATUS)
+        self.assertEqual(len(update_form.access_grants), 1)
+        self.assertIsInstance(update_form.access_grants[0], dict)
+        self.assertEqual(update_form.access_grants[0]["id"], "grant-1")
+        self.assertEqual(update_form.access_grants[0]["principal_id"], "user-2")
 
 
 if __name__ == "__main__":

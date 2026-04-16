@@ -1174,7 +1174,7 @@ def persist_synthesis_note(
                 name=collection.name,
                 description=collection.description,
                 meta=set_linked_note_ids(collection.meta or {}, linked_note_ids),
-                access_grants=collection.access_grants,
+                access_grants=access_grants,
             ),
             db=db,
         )
