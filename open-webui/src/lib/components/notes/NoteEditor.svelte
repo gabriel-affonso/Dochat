@@ -170,11 +170,117 @@
 	let stopResponseFlag = false;
 
 	let inputElement = null;
+	let lastSavedSnapshot = '';
 
 	// Computed HTML for editor: fall back to markdown if HTML is missing
 	$: editorHtml =
 		note?.data?.content?.html ||
 		(note?.data?.content?.md ? marked.parse(note.data.content.md) : '');
+
+	const getDefaultNoteData = () => ({
+		content: {
+			json: null,
+			html: '',
+			md: ''
+		},
+		versions: [],
+		files: null
+	});
+
+	const normalizeNoteState = (_note) => {
+		if (!_note) {
+			return null;
+		}
+
+		const defaultData = getDefaultNoteData();
+		return {
+			..._note,
+			data: {
+				...defaultData,
+				...(_note.data ?? {}),
+				content: {
+					...defaultData.content,
+					...(_note.data?.content ?? {})
+				},
+				versions: _note.data?.versions ?? [],
+				files: _note.data?.files ?? null
+			},
+			access_grants: Array.isArray(_note?.access_grants) ? _note.access_grants : []
+		};
+	};
+
+	const getNoteSavePayload = () => {
+		if (!note) {
+			return null;
+		}
+
+		const normalizedNote = normalizeNoteState(note);
+		const normalizedFiles = files.length > 0 ? files : null;
+
+		normalizedNote.data.files = normalizedFiles;
+		note.data.files = normalizedFiles;
+
+		return {
+			title: normalizedNote.title === '' ? $i18n.t('Untitled') : normalizedNote.title,
+			data: normalizedNote.data,
+			meta: normalizedNote.meta ?? null,
+			access_grants: normalizedNote.access_grants ?? []
+		};
+	};
+
+	const getNoteSaveSignature = () => {
+		const payload = getNoteSavePayload();
+		return payload ? JSON.stringify(payload) : '';
+	};
+
+	const persistNoteSnapshot = async ({
+		keepalive = false,
+		silent = false
+	}: {
+		keepalive?: boolean;
+		silent?: boolean;
+	} = {}) => {
+		if (!id || !note?.write_access) {
+			return false;
+		}
+
+		const payload = getNoteSavePayload();
+		if (!payload) {
+			return false;
+		}
+
+		const signature = JSON.stringify(payload);
+		if (signature === lastSavedSnapshot) {
+			return true;
+		}
+
+		const res = await updateNoteById(localStorage.token, id, payload, keepalive).catch((e) => {
+			if (!silent) {
+				toast.error(`${e}`);
+			}
+			return null;
+		});
+
+		if (!res) {
+			return false;
+		}
+
+		lastSavedSnapshot = signature;
+		return true;
+	};
+
+	const flushPendingNoteChanges = (keepalive = false) => {
+		if (debounceTimeout) {
+			clearTimeout(debounceTimeout);
+			debounceTimeout = null;
+		}
+
+		void persistNoteSnapshot({ keepalive, silent: true });
+	};
+
+	const handlePageHide = () => {
+		flushPendingNoteChanges(true);
+	};
 
 	const init = async () => {
 		loading = true;
@@ -186,11 +292,9 @@
 		messages = [];
 
 		if (res) {
-			note = res;
-			if (!Array.isArray(note?.access_grants)) {
-				note.access_grants = [];
-			}
-			files = res.data.files || [];
+			note = normalizeNoteState(res);
+			files = note.data.files || [];
+			lastSavedSnapshot = getNoteSaveSignature();
 
 			if (note?.write_access) {
 				$socket?.emit('join-note', {
@@ -212,9 +316,10 @@
 	const loadCollectionCandidates = async () => {
 		if (!showCollectionLinkModal) return;
 
-		const res = await (collectionQuery.trim()
-			? searchKnowledgeBases(localStorage.token, collectionQuery || null, null, 1)
-			: getKnowledgeBases(localStorage.token, 1)
+		const res = await (
+			collectionQuery.trim()
+				? searchKnowledgeBases(localStorage.token, collectionQuery || null, null, 1)
+				: getKnowledgeBases(localStorage.token, 1)
 		).catch(() => null);
 
 		const linkedCollectionIds = new Set((note?.linked_collections ?? []).map((item) => item.id));
@@ -222,9 +327,7 @@
 	};
 
 	const getVisibleModelIds = () =>
-		$models
-			.filter((model) => !(model?.info?.meta?.hidden ?? false))
-			.map((model) => model.id);
+		$models.filter((model) => !(model?.info?.meta?.hidden ?? false)).map((model) => model.id);
 
 	const ensureSelectedModelId = () => {
 		const availableModels = getVisibleModelIds();
@@ -263,14 +366,19 @@
 
 	const addNoteToCollectionHandler = async (collection) => {
 		if (!note?.id) return;
+		await persistNoteSnapshot({ silent: true });
 
-		const res = await addNoteToKnowledgeById(localStorage.token, collection.id, note.id).catch((e) => {
-			toast.error(`${e}`);
-			return null;
-		});
+		const res = await addNoteToKnowledgeById(localStorage.token, collection.id, note.id).catch(
+			(e) => {
+				toast.error(`${e}`);
+				return null;
+			}
+		);
 
 		if (res) {
-			note = await getNoteById(localStorage.token, id).catch(() => note);
+			const updatedNote = await getNoteById(localStorage.token, id).catch(() => note);
+			note = normalizeNoteState(updatedNote);
+			lastSavedSnapshot = getNoteSaveSignature();
 			showCollectionLinkModal = false;
 			collectionQuery = '';
 			toast.success($i18n.t('Note linked to collection.'));
@@ -279,14 +387,19 @@
 
 	const removeNoteFromCollectionHandler = async (collectionId) => {
 		if (!note?.id) return;
+		await persistNoteSnapshot({ silent: true });
 
-		const res = await removeNoteFromKnowledgeById(localStorage.token, collectionId, note.id).catch((e) => {
-			toast.error(`${e}`);
-			return null;
-		});
+		const res = await removeNoteFromKnowledgeById(localStorage.token, collectionId, note.id).catch(
+			(e) => {
+				toast.error(`${e}`);
+				return null;
+			}
+		);
 
 		if (res) {
-			note = await getNoteById(localStorage.token, id).catch(() => note);
+			const updatedNote = await getNoteById(localStorage.token, id).catch(() => note);
+			note = normalizeNoteState(updatedNote);
+			lastSavedSnapshot = getNoteSaveSignature();
 			toast.success($i18n.t('Note removed from collection.'));
 		}
 	};
@@ -299,16 +412,9 @@
 		}
 
 		debounceTimeout = setTimeout(async () => {
-			const res = await updateNoteById(localStorage.token, id, {
-				title: note?.title === '' ? $i18n.t('Untitled') : note.title,
-				data: {
-					files: files
-				},
-				access_grants: note?.access_grants ?? []
-			}).catch((e) => {
-				toast.error(`${e}`);
-			});
-		}, 200);
+			debounceTimeout = null;
+			await persistNoteSnapshot();
+		}, 400);
 	};
 
 	$: if (id) {
@@ -919,6 +1025,7 @@ Do not include explanations, commentary, or XML tags.
 	onMount(async () => {
 		await tick();
 		ensureSelectedModelId();
+		window.addEventListener('pagehide', handlePageHide);
 
 		const dropzoneElement = document.getElementById('note-editor');
 
@@ -928,9 +1035,11 @@ Do not include explanations, commentary, or XML tags.
 	});
 
 	onDestroy(() => {
+		flushPendingNoteChanges();
 		console.log('destroy');
 		$socket?.off('note-events', noteEventHandler);
 		clearTimeout(collectionSearchTimer);
+		window.removeEventListener('pagehide', handlePageHide);
 
 		const dropzoneElement = document.getElementById('note-editor');
 
@@ -973,10 +1082,14 @@ Do not include explanations, commentary, or XML tags.
 
 {#if showCollectionLinkModal && note}
 	<div class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/15 backdrop-blur-sm">
-		<div class="w-full max-w-2xl rounded-[1.5rem] border border-[rgba(221,214,202,0.92)] bg-white p-4 shadow-[0_24px_64px_rgba(84,74,58,0.12)]">
+		<div
+			class="w-full max-w-2xl rounded-[1.5rem] border border-[rgba(221,214,202,0.92)] bg-white p-4 shadow-[0_24px_64px_rgba(84,74,58,0.12)]"
+		>
 			<div class="flex items-start justify-between gap-4">
 				<div>
-					<div class="text-[0.72rem] font-bold uppercase tracking-[0.08em] text-[var(--dochat-accent)]">
+					<div
+						class="text-[0.72rem] font-bold uppercase tracking-[0.08em] text-[var(--dochat-accent)]"
+					>
 						Colecoes
 					</div>
 					<div class="mt-1 text-lg font-semibold text-[var(--dochat-text)]">
@@ -999,7 +1112,9 @@ Do not include explanations, commentary, or XML tags.
 				</button>
 			</div>
 
-			<div class="mt-4 flex items-center gap-2 rounded-2xl border border-[rgba(231,225,216,0.96)] bg-[rgba(251,249,245,0.94)] px-4 py-3 text-[var(--dochat-text-soft)]">
+			<div
+				class="mt-4 flex items-center gap-2 rounded-2xl border border-[rgba(231,225,216,0.96)] bg-[rgba(251,249,245,0.94)] px-4 py-3 text-[var(--dochat-text-soft)]"
+			>
 				<Search className="size-4" />
 				<input
 					class="w-full bg-transparent outline-none text-sm text-[var(--dochat-text)]"
@@ -1016,7 +1131,9 @@ Do not include explanations, commentary, or XML tags.
 					</div>
 				{:else}
 					{#each collectionCandidates as collection}
-						<div class="flex items-center justify-between gap-3 rounded-2xl border border-[rgba(231,225,216,0.94)] bg-[rgba(251,249,245,0.9)] px-4 py-3">
+						<div
+							class="flex items-center justify-between gap-3 rounded-2xl border border-[rgba(231,225,216,0.94)] bg-[rgba(251,249,245,0.9)] px-4 py-3"
+						>
 							<div class="min-w-0">
 								<div class="truncate text-sm font-semibold text-[var(--dochat-text)]">
 									{collection.name}
@@ -1333,7 +1450,9 @@ Do not include explanations, commentary, or XML tags.
 								{#if note?.linked_collections?.length > 0}
 									<div class="flex items-center gap-1.5 px-1 min-w-fit">
 										{#each note.linked_collections as collection}
-											<div class="flex items-center gap-1 rounded-full bg-[var(--dochat-accent-soft)] px-2 py-1 text-[var(--dochat-accent)]">
+											<div
+												class="flex items-center gap-1 rounded-full bg-[var(--dochat-accent-soft)] px-2 py-1 text-[var(--dochat-accent)]"
+											>
 												<button
 													type="button"
 													class="font-medium"
@@ -1410,6 +1529,8 @@ Do not include explanations, commentary, or XML tags.
 									wordCount = editor.storage.characterCount.words();
 									charCount = editor.storage.characterCount.characters();
 								}
+
+								changeDebounceHandler();
 							}}
 							fileHandler={true}
 							onFileDrop={(currentEditor, files, pos) => {
