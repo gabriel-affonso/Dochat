@@ -3,6 +3,17 @@ import { defineConfig } from 'vite';
 
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 
+const ignoredWatchPaths = [
+	'**/.git/**',
+	'**/node_modules/**',
+	'**/.venv/**',
+	'**/venv/**',
+	'**/backend/.venv/**',
+	'**/backend/venv/**',
+	'**/site-packages/**',
+	'**/static/pyodide/**'
+];
+
 export default defineConfig({
 	plugins: [
 		sveltekit(),
@@ -22,6 +33,12 @@ export default defineConfig({
 	},
 	build: {
 		sourcemap: true
+	},
+	server: {
+		watch: {
+			// Local Python environments and generated Pyodide assets can exhaust file watchers.
+			ignored: ignoredWatchPaths
+		}
 	},
 	worker: {
 		format: 'es'
