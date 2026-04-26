@@ -1116,6 +1116,9 @@ def persist_synthesis_note(
     existing_note = (
         Notes.get_note_by_id(report_record.note_id, db=db) if report_record.note_id else None
     )
+    existing_note_data = (
+        existing_note.data if existing_note and isinstance(existing_note.data, dict) else {}
+    )
     note_meta = {
         **(existing_note.meta if existing_note and existing_note.meta else {}),
         "category": "sintese",
@@ -1138,13 +1141,22 @@ def persist_synthesis_note(
         grant.model_dump() if hasattr(grant, "model_dump") else grant
         for grant in (collection.access_grants or [])
     ]
+    note_data = {
+        "content": {
+            "json": None,
+            "md": markdown_content,
+            "html": html,
+        },
+        "versions": existing_note_data.get("versions") or [],
+        "files": existing_note_data.get("files") or None,
+    }
 
     if existing_note:
         note = Notes.update_note_by_id(
             existing_note.id,
             NoteUpdateForm(
                 title=note_title,
-                data={"content": {"md": markdown_content, "html": html}},
+                data=note_data,
                 meta=note_meta,
                 access_grants=access_grants,
             ),
@@ -1155,7 +1167,7 @@ def persist_synthesis_note(
             user.id,
             NoteForm(
                 title=note_title,
-                data={"content": {"md": markdown_content, "html": html}},
+                data=note_data,
                 meta=note_meta,
                 access_grants=access_grants,
             ),

@@ -141,6 +141,9 @@ class CollectionSynthesisTestCase(unittest.TestCase):
         self.assertEqual(len(note_warnings), 1)
         self.assertTrue(insert_form.data["content"]["html"])
         self.assertIn("<h1>", insert_form.data["content"]["html"])
+        self.assertIsNone(insert_form.data["content"]["json"])
+        self.assertEqual(insert_form.data["versions"], [])
+        self.assertIsNone(insert_form.data["files"])
         self.assertIn("indexacao vetorial", note_warnings[0].lower())
         self.assertIn("300 seconds", note_warnings[0])
 
