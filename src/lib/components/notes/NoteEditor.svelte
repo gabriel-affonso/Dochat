@@ -94,6 +94,7 @@
 	import SparklesSolid from '../icons/SparklesSolid.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import Search from '../icons/Search.svelte';
+	import XMark from '../icons/XMark.svelte';
 	import Bars3BottomLeft from '../icons/Bars3BottomLeft.svelte';
 	import ArrowUturnLeft from '../icons/ArrowUturnLeft.svelte';
 	import ArrowUturnRight from '../icons/ArrowUturnRight.svelte';
@@ -163,6 +164,10 @@
 
 	let dragged = false;
 	let loading = false;
+	let lastSavedSnapshot = '';
+	let noteHasStructuredContent = false;
+	let useCollaborativeEditor = false;
+	let editorValue = null;
 
 	let editing = false;
 	let streaming = false;
@@ -176,37 +181,145 @@
 		note?.data?.content?.html ||
 		(note?.data?.content?.md ? marked.parse(note.data.content.md) : '');
 
-	const init = async () => {
-		loading = true;
-		const res = await getNoteById(localStorage.token, id).catch((error) => {
-			toast.error(`${error}`);
+	const getDefaultNoteData = () => ({
+		content: {
+			json: null,
+			html: '',
+			md: ''
+		},
+		versions: [],
+		files: null
+	});
+
+	const normalizeNoteState = (_note) => {
+		if (!_note) {
+			return null;
+		}
+
+		const defaultData = getDefaultNoteData();
+		return {
+			..._note,
+			data: {
+				...defaultData,
+				...(_note.data ?? {}),
+				content: {
+					...defaultData.content,
+					...(_note.data?.content ?? {})
+				},
+				versions: _note.data?.versions ?? [],
+				files: _note.data?.files ?? null
+			},
+			access_grants: Array.isArray(_note?.access_grants) ? _note.access_grants : []
+		};
+	};
+
+	const getNoteSavePayload = () => {
+		if (!note) {
+			return null;
+		}
+
+		const normalizedNote = normalizeNoteState(note);
+		if (!normalizedNote) {
+			return null;
+		}
+		const normalizedFiles = files.length > 0 ? files : null;
+
+		normalizedNote.data.files = normalizedFiles;
+		note.data.files = normalizedFiles;
+
+		return {
+			title: normalizedNote.title === '' ? $i18n.t('Untitled') : normalizedNote.title,
+			data: normalizedNote.data,
+			meta: normalizedNote.meta ?? null,
+			access_grants: normalizedNote.access_grants ?? []
+		};
+	};
+
+	const getNoteSaveSignature = () => {
+		const payload = getNoteSavePayload();
+		return payload ? JSON.stringify(payload) : '';
+	};
+
+	const persistNoteSnapshot = async ({
+		keepalive = false,
+		silent = false
+	}: {
+		keepalive?: boolean;
+		silent?: boolean;
+	} = {}) => {
+		if (!id || !note?.write_access) {
+			return false;
+		}
+
+		const payload = getNoteSavePayload();
+		if (!payload) {
+			return false;
+		}
+
+		const signature = JSON.stringify(payload);
+		if (signature === lastSavedSnapshot) {
+			return true;
+		}
+
+		const res = await updateNoteById(localStorage.token, id, payload, keepalive).catch((e) => {
+			if (!silent) {
+				toast.error(`${e}`);
+			}
 			return null;
 		});
 
-		messages = [];
-
-		if (res) {
-			note = res;
-			if (!Array.isArray(note?.access_grants)) {
-				note.access_grants = [];
-			}
-			files = res.data.files || [];
-
-			if (note?.write_access) {
-				$socket?.emit('join-note', {
-					note_id: id,
-					auth: {
-						token: localStorage.token
-					}
-				});
-				$socket?.on('note-events', noteEventHandler);
-			}
-		} else {
-			goto('/');
-			return;
+		if (!res) {
+			return false;
 		}
 
-		loading = false;
+		lastSavedSnapshot = signature;
+		return true;
+	};
+
+	const flushPendingNoteChanges = (keepalive = false) => {
+		if (debounceTimeout) {
+			clearTimeout(debounceTimeout);
+			debounceTimeout = null;
+		}
+
+		void persistNoteSnapshot({ keepalive, silent: true });
+	};
+
+	const handlePageHide = () => {
+		flushPendingNoteChanges(true);
+	};
+
+	const init = async () => {
+		loading = true;
+		try {
+			const res = await getNoteById(localStorage.token, id).catch((error) => {
+				toast.error(`${error}`);
+				return null;
+			});
+
+			messages = [];
+
+			if (res) {
+				note = normalizeNoteState(res);
+				files = note.data.files || [];
+				lastSavedSnapshot = getNoteSaveSignature();
+
+				if (note?.write_access) {
+					$socket?.emit('join-note', {
+						note_id: id,
+						auth: {
+							token: localStorage.token
+						}
+					});
+					$socket?.on('note-events', noteEventHandler);
+				}
+			} else {
+				goto('/');
+				return;
+			}
+		} finally {
+			loading = false;
+		}
 	};
 
 	const loadCollectionCandidates = async () => {
@@ -299,21 +412,22 @@
 		}
 
 		debounceTimeout = setTimeout(async () => {
-			const res = await updateNoteById(localStorage.token, id, {
-				title: note?.title === '' ? $i18n.t('Untitled') : note.title,
-				data: {
-					files: files
-				},
-				access_grants: note?.access_grants ?? []
-			}).catch((e) => {
-				toast.error(`${e}`);
-			});
-		}, 200);
+			debounceTimeout = null;
+			await persistNoteSnapshot();
+		}, 400);
 	};
 
 	$: if (id) {
 		init();
 	}
+
+	$: noteHasStructuredContent = Boolean(note?.data?.content?.json);
+	$: useCollaborativeEditor = Boolean(
+		note?.write_access && noteHasStructuredContent && $socket && $user
+	);
+	$: editorValue = noteHasStructuredContent
+		? note?.data?.content?.json
+		: note?.data?.content?.html || editorHtml;
 
 	function areContentsEqual(a, b) {
 		return JSON.stringify(a) === JSON.stringify(b);
@@ -925,12 +1039,16 @@ Do not include explanations, commentary, or XML tags.
 		// dropzoneElement?.addEventListener('dragover', onDragOver);
 		// dropzoneElement?.addEventListener('drop', onDrop);
 		// dropzoneElement?.addEventListener('dragleave', onDragLeave);
+
+		window.addEventListener('pagehide', handlePageHide);
 	});
 
 	onDestroy(() => {
 		console.log('destroy');
 		$socket?.off('note-events', noteEventHandler);
 		clearTimeout(collectionSearchTimer);
+		window.removeEventListener('pagehide', handlePageHide);
+		flushPendingNoteChanges(true);
 
 		const dropzoneElement = document.getElementById('note-editor');
 
@@ -1375,11 +1493,12 @@ Do not include explanations, commentary, or XML tags.
 							bind:editor
 							id={`note-${note.id}`}
 							className="input-prose-sm px-0.5 h-[calc(100%-2rem)]"
-							json={true}
-							bind:value={note.data.content.json}
+							json={noteHasStructuredContent}
+							raw={!noteHasStructuredContent}
+							value={editorValue}
 							html={editorHtml}
 							documentId={`note:${note.id}`}
-							collaboration={true}
+							collaboration={useCollaborativeEditor}
 							socket={$socket}
 							user={$user}
 							dragHandle={true}
@@ -1403,12 +1522,17 @@ Do not include explanations, commentary, or XML tags.
 								}
 							}}
 							onChange={(content) => {
+								note.data.content.json = noteHasStructuredContent ? content.json : null;
 								note.data.content.html = content.html;
 								note.data.content.md = content.md;
 
 								if (editor) {
 									wordCount = editor.storage.characterCount.words();
 									charCount = editor.storage.characterCount.characters();
+								}
+
+								if (!useCollaborativeEditor) {
+									changeDebounceHandler();
 								}
 							}}
 							fileHandler={true}

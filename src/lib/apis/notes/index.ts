@@ -218,11 +218,17 @@ export const getNoteById = async (token: string, id: string) => {
 	return res;
 };
 
-export const updateNoteById = async (token: string, id: string, note: NoteItem) => {
+export const updateNoteById = async (
+	token: string,
+	id: string,
+	note: NoteItem,
+	keepalive = false
+) => {
 	let error = null;
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/notes/${id}/update`, {
 		method: 'POST',
+		keepalive,
 		headers: {
 			Accept: 'application/json',
 			'Content-Type': 'application/json',

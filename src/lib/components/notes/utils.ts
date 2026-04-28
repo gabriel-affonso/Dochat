@@ -117,7 +117,9 @@ export const createNoteHandler = async (title: string, md?: string, html?: strin
 				json: null,
 				html: html || md || '',
 				md: md || ''
-			}
+			},
+			versions: [],
+			files: null
 		},
 		meta: null,
 		access_grants: []

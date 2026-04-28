@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -1089,7 +1090,7 @@ def render_synthesis_markdown(
     return "\n".join(lines).strip()
 
 
-def persist_synthesis_note(
+async def persist_synthesis_note(
     request: Request,
     collection: KnowledgeModel,
     report_record,
@@ -1116,6 +1117,9 @@ def persist_synthesis_note(
     existing_note = (
         Notes.get_note_by_id(report_record.note_id, db=db) if report_record.note_id else None
     )
+    existing_note_data = (
+        existing_note.data if existing_note and isinstance(existing_note.data, dict) else {}
+    )
     note_meta = {
         **(existing_note.meta if existing_note and existing_note.meta else {}),
         "category": "sintese",
@@ -1139,12 +1143,22 @@ def persist_synthesis_note(
         for grant in (collection.access_grants or [])
     ]
 
+    note_data = {
+        "content": {
+            "json": None,
+            "md": markdown_content,
+            "html": html,
+        },
+        "versions": existing_note_data.get("versions") or [],
+        "files": existing_note_data.get("files") or None,
+    }
+
     if existing_note:
         note = Notes.update_note_by_id(
             existing_note.id,
             NoteUpdateForm(
                 title=note_title,
-                data={"content": {"md": markdown_content, "html": html}},
+                data=note_data,
                 meta=note_meta,
                 access_grants=access_grants,
             ),
@@ -1155,7 +1169,7 @@ def persist_synthesis_note(
             user.id,
             NoteForm(
                 title=note_title,
-                data={"content": {"md": markdown_content, "html": html}},
+                data=note_data,
                 meta=note_meta,
                 access_grants=access_grants,
             ),
@@ -1174,7 +1188,7 @@ def persist_synthesis_note(
                 name=collection.name,
                 description=collection.description,
                 meta=set_linked_note_ids(collection.meta or {}, linked_note_ids),
-                access_grants=collection.access_grants,
+                access_grants=access_grants,
             ),
             db=db,
         )
@@ -1184,7 +1198,13 @@ def persist_synthesis_note(
     effective_status = final_status
 
     try:
-        upsert_linked_note_vector(request, collection, note, user=user)
+        await asyncio.to_thread(
+            upsert_linked_note_vector,
+            request,
+            collection,
+            note,
+            user,
+        )
     except Exception as exc:
         log.warning(
             "Synthesis note vector indexing skipped for collection_id=%s note_id=%s",
@@ -1566,7 +1586,7 @@ async def process_collection_synthesis_job(
         if report_record is None:
             return
 
-        note_id, note_warnings, status_value = persist_synthesis_note(
+        note_id, note_warnings, status_value = await persist_synthesis_note(
             request,
             collection,
             report_record,

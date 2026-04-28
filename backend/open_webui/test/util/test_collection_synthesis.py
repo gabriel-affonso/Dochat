@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -121,14 +122,16 @@ class CollectionSynthesisTestCase(unittest.TestCase):
             "upsert_linked_note_vector",
             side_effect=TimeoutError("Embedding generation timed out after 300 seconds"),
         ):
-            note_id, note_warnings, final_status = collection_synthesis.persist_synthesis_note(
-                request=SimpleNamespace(),
-                collection=collection,
-                report_record=report_record,
-                user=user,
-                report={"overview": "Resumo final."},
-                final_status=collection_synthesis.SYNTHESIS_COMPLETED_STATUS,
-                warnings=[],
+            note_id, note_warnings, final_status = asyncio.run(
+                collection_synthesis.persist_synthesis_note(
+                    request=SimpleNamespace(),
+                    collection=collection,
+                    report_record=report_record,
+                    user=user,
+                    report={"overview": "Resumo final."},
+                    final_status=collection_synthesis.SYNTHESIS_COMPLETED_STATUS,
+                    warnings=[],
+                )
             )
 
         insert_form = mock_insert.call_args.args[1]
@@ -140,6 +143,9 @@ class CollectionSynthesisTestCase(unittest.TestCase):
         self.assertEqual(len(note_warnings), 1)
         self.assertTrue(insert_form.data["content"]["html"])
         self.assertIn("<h1>", insert_form.data["content"]["html"])
+        self.assertIsNone(insert_form.data["content"]["json"])
+        self.assertEqual(insert_form.data["versions"], [])
+        self.assertIsNone(insert_form.data["files"])
         self.assertIn("indexacao vetorial", note_warnings[0].lower())
         self.assertIn("300 seconds", note_warnings[0])
 

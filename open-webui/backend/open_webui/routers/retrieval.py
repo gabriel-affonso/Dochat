@@ -4,7 +4,6 @@ import mimetypes
 import os
 import shutil
 import asyncio
-import time
 
 import re
 import uuid
@@ -88,7 +87,6 @@ from open_webui.retrieval.utils import (
     get_reranking_function,
     get_model_path,
     query_collection,
-    query_collection_with_fallback,
     query_collection_with_hybrid_search,
     query_doc,
     query_doc_with_hybrid_search,
@@ -1682,45 +1680,76 @@ def process_file(
 
     if file:
         try:
-            processing_started_at = int(time.time())
+
             collection_name = form_data.collection_name
 
             if collection_name is None:
                 collection_name = f"file-{file.id}"
 
-            knowledge = (
-                Knowledges.get_knowledge_by_id(form_data.collection_name, db=db)
-                if form_data.collection_name
-                else None
-            )
-            file_meta = file.meta or {}
-            file_data = file.data or {}
-            document_title = (
-                file_meta.get("title") or file_meta.get("name") or file.filename
-            )
-            document_source = file_meta.get("source") or file.filename
+            if form_data.content:
+                # Update the content in the file
+                # Usage: /files/{file_id}/data/content/update, /files/ (audio file upload pipeline)
 
-            def build_chunk_metadata(extra_metadata=None, chunk_index: Optional[int] = None):
-                extra_metadata = extra_metadata or {}
-                metadata = {
-                    **file_meta,
-                    **filter_metadata(extra_metadata),
-                    "name": file.filename,
-                    "document_title": document_title,
-                    "created_by": file.user_id,
-                    "file_id": file.id,
-                    "source": document_source,
-                    "collection_id": knowledge.id if knowledge else None,
-                    "collection_name": knowledge.name if knowledge else None,
-                }
-                if chunk_index is not None:
-                    metadata["chunk_index"] = chunk_index
-                return metadata
+                try:
+                    # /files/{file_id}/data/content/update
+                    VECTOR_DB_CLIENT.delete_collection(
+                        collection_name=f"file-{file.id}"
+                    )
+                except:
+                    # Audio file upload pipeline
+                    pass
 
-            def extract_docs_from_file_storage():
+                docs = [
+                    Document(
+                        page_content=form_data.content.replace("<br/>", "\n"),
+                        metadata={
+                            **file.meta,
+                            "name": file.filename,
+                            "created_by": file.user_id,
+                            "file_id": file.id,
+                            "source": file.filename,
+                        },
+                    )
+                ]
+
+                text_content = form_data.content
+            elif form_data.collection_name:
+                # Check if the file has already been processed and save the content
+                # Usage: /knowledge/{id}/file/add, /knowledge/{id}/file/update
+
+                result = VECTOR_DB_CLIENT.query(
+                    collection_name=f"file-{file.id}", filter={"file_id": file.id}
+                )
+
+                if result is not None and len(result.ids[0]) > 0:
+                    docs = [
+                        Document(
+                            page_content=result.documents[0][idx],
+                            metadata=result.metadatas[0][idx],
+                        )
+                        for idx, id in enumerate(result.ids[0])
+                    ]
+                else:
+                    docs = [
+                        Document(
+                            page_content=file.data.get("content", ""),
+                            metadata={
+                                **file.meta,
+                                "name": file.filename,
+                                "created_by": file.user_id,
+                                "file_id": file.id,
+                                "source": file.filename,
+                            },
+                        )
+                    ]
+
+                text_content = file.data.get("content", "")
+            else:
+                # Process the file and save the content
+                # Usage: /files/
                 file_path = file.path
                 if file_path:
-                    resolved_file_path = Storage.get_file(file_path)
+                    file_path = Storage.get_file(file_path)
                     loader = Loader(
                         engine=request.app.state.config.CONTENT_EXTRACTION_ENGINE,
                         user=user,
@@ -1754,100 +1783,37 @@ def process_file(
                         MINERU_API_TIMEOUT=request.app.state.config.MINERU_API_TIMEOUT,
                         MINERU_PARAMS=request.app.state.config.MINERU_PARAMS,
                     )
-                    extracted_docs = loader.load(
-                        file.filename, file_meta.get("content_type"), resolved_file_path
+                    docs = loader.load(
+                        file.filename, file.meta.get("content_type"), file_path
                     )
 
-                    extracted_docs = [
+                    docs = [
                         Document(
                             page_content=doc.page_content,
-                            metadata=build_chunk_metadata(doc.metadata, idx),
+                            metadata={
+                                **filter_metadata(doc.metadata),
+                                "name": file.filename,
+                                "created_by": file.user_id,
+                                "file_id": file.id,
+                                "source": file.filename,
+                            },
                         )
-                        for idx, doc in enumerate(extracted_docs)
+                        for doc in docs
                     ]
                 else:
-                    extracted_docs = [
-                        Document(
-                            page_content=file_data.get("content", ""),
-                            metadata=build_chunk_metadata(chunk_index=0),
-                        )
-                    ]
-
-                extracted_text_content = " ".join(
-                    [doc.page_content for doc in extracted_docs if doc.page_content]
-                )
-                return extracted_docs, extracted_text_content
-
-            Files.update_file_data_by_id(
-                file.id,
-                {
-                    "status": "pending",
-                    "processing_status": "processing",
-                    "embedding_status": "processing",
-                    "last_processed_at": processing_started_at,
-                },
-                db=db,
-            )
-
-            if form_data.content:
-                # Update the content in the file
-                # Usage: /files/{file_id}/data/content/update, /files/ (audio file upload pipeline)
-
-                try:
-                    # /files/{file_id}/data/content/update
-                    VECTOR_DB_CLIENT.delete_collection(
-                        collection_name=f"file-{file.id}"
-                    )
-                except:
-                    # Audio file upload pipeline
-                    pass
-
-                docs = [
-                    Document(
-                        page_content=form_data.content.replace("<br/>", "\n"),
-                        metadata=build_chunk_metadata(chunk_index=0),
-                    )
-                ]
-
-                text_content = form_data.content
-            elif form_data.collection_name:
-                # Check if the file has already been processed and save the content
-                # Usage: /knowledge/{id}/file/add, /knowledge/{id}/file/update
-
-                try:
-                    result = VECTOR_DB_CLIENT.query(
-                        collection_name=f"file-{file.id}", filter={"file_id": file.id}
-                    )
-                except Exception:
-                    result = None
-
-                if result is not None and result.ids and len(result.ids[0]) > 0:
                     docs = [
                         Document(
-                            page_content=result.documents[0][idx],
-                            metadata=build_chunk_metadata(
-                                result.metadatas[0][idx], chunk_index=idx
-                            ),
-                        )
-                        for idx, id in enumerate(result.ids[0])
-                    ]
-                    text_content = file_data.get("content", "") or " ".join(
-                        [doc.page_content for doc in docs if doc.page_content]
-                    )
-                elif file_data.get("content"):
-                    docs = [
-                        Document(
-                            page_content=file_data.get("content", ""),
-                            metadata=build_chunk_metadata(chunk_index=0),
+                            page_content=file.data.get("content", ""),
+                            metadata={
+                                **file.meta,
+                                "name": file.filename,
+                                "created_by": file.user_id,
+                                "file_id": file.id,
+                                "source": file.filename,
+                            },
                         )
                     ]
-                    text_content = file_data.get("content", "")
-                else:
-                    docs, text_content = extract_docs_from_file_storage()
-            else:
-                # Process the file and save the content
-                # Usage: /files/
-                docs, text_content = extract_docs_from_file_storage()
+                text_content = " ".join([doc.page_content for doc in docs])
 
             log.debug(f"text_content: {text_content}")
             Files.update_file_data_by_id(
@@ -1858,17 +1824,7 @@ def process_file(
             hash = calculate_sha256_string(text_content)
 
             if request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL:
-                Files.update_file_data_by_id(
-                    file.id,
-                    {
-                        "status": "completed",
-                        "processing_status": "ready",
-                        "embedding_status": "bypassed",
-                        "chunk_count": len(docs),
-                        "last_processed_at": int(time.time()),
-                    },
-                    db=db,
-                )
+                Files.update_file_data_by_id(file.id, {"status": "completed"}, db=db)
                 Files.update_file_hash_by_id(file.id, hash, db=db)
                 return {
                     "status": True,
@@ -1911,13 +1867,7 @@ def process_file(
 
                             Files.update_file_data_by_id(
                                 file.id,
-                                {
-                                    "status": "completed",
-                                    "processing_status": "ready",
-                                    "embedding_status": "ready",
-                                    "chunk_count": len(docs),
-                                    "last_processed_at": int(time.time()),
-                                },
+                                {"status": "completed"},
                                 db=session,
                             )
                             Files.update_file_hash_by_id(file.id, hash, db=session)
@@ -1939,12 +1889,7 @@ def process_file(
             with get_db() as session:
                 Files.update_file_data_by_id(
                     file.id,
-                    {
-                        "status": "failed",
-                        "processing_status": "failed",
-                        "embedding_status": "failed",
-                        "last_processed_at": int(time.time()),
-                    },
+                    {"status": "failed"},
                     db=session,
                 )
                 # Clear the hash so the file can be re-uploaded after fixing the issue
@@ -2681,14 +2626,13 @@ async def query_collection_handler(
         if request.app.state.config.ENABLE_RAG_HYBRID_SEARCH and (
             form_data.hybrid is None or form_data.hybrid
         ):
-            return await query_collection_with_fallback(
+            return await query_collection_with_hybrid_search(
                 collection_names=form_data.collection_names,
                 queries=[form_data.query],
                 embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
                     query, prefix=prefix, user=user
                 ),
                 k=form_data.k if form_data.k else request.app.state.config.TOP_K,
-                hybrid_search=True,
                 reranking_function=(
                     (
                         lambda query, documents: request.app.state.RERANKING_FUNCTION(

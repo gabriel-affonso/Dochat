@@ -152,6 +152,10 @@
 
 	let dragged = false;
 	let loading = false;
+	let lastSavedSnapshot = '';
+	let noteHasStructuredContent = false;
+	let useCollaborativeEditor = false;
+	let editorValue = null;
 
 	let editing = false;
 	let streaming = false;
@@ -197,34 +201,113 @@
 		};
 	};
 
-	const init = async () => {
-		loading = true;
-		const res = await getNoteById(localStorage.token, id).catch((error) => {
-			toast.error(`${error}`);
+	const getNoteSavePayload = () => {
+		if (!note) {
+			return null;
+		}
+
+		const normalizedNote = normalizeNoteState(note);
+		if (!normalizedNote) {
+			return null;
+		}
+		const normalizedFiles = files.length > 0 ? files : null;
+
+		normalizedNote.data.files = normalizedFiles;
+		note.data.files = normalizedFiles;
+
+		return {
+			title: normalizedNote.title === '' ? $i18n.t('Untitled') : normalizedNote.title,
+			data: normalizedNote.data,
+			meta: normalizedNote.meta ?? null,
+			access_grants: normalizedNote.access_grants ?? []
+		};
+	};
+
+	const getNoteSaveSignature = () => {
+		const payload = getNoteSavePayload();
+		return payload ? JSON.stringify(payload) : '';
+	};
+
+	const persistNoteSnapshot = async ({
+		keepalive = false,
+		silent = false
+	}: {
+		keepalive?: boolean;
+		silent?: boolean;
+	} = {}) => {
+		if (!id || !note?.write_access) {
+			return false;
+		}
+
+		const payload = getNoteSavePayload();
+		if (!payload) {
+			return false;
+		}
+
+		const signature = JSON.stringify(payload);
+		if (signature === lastSavedSnapshot) {
+			return true;
+		}
+
+		const res = await updateNoteById(localStorage.token, id, payload, keepalive).catch((e) => {
+			if (!silent) {
+				toast.error(`${e}`);
+			}
 			return null;
 		});
 
-		messages = [];
-
-		if (res) {
-			note = normalizeNoteState(res);
-			files = note.data.files || [];
-
-			if (note?.write_access) {
-				$socket?.emit('join-note', {
-					note_id: id,
-					auth: {
-						token: localStorage.token
-					}
-				});
-				$socket?.on('note-events', noteEventHandler);
-			}
-		} else {
-			goto('/');
-			return;
+		if (!res) {
+			return false;
 		}
 
-		loading = false;
+		lastSavedSnapshot = signature;
+		return true;
+	};
+
+	const flushPendingNoteChanges = (keepalive = false) => {
+		if (debounceTimeout) {
+			clearTimeout(debounceTimeout);
+			debounceTimeout = null;
+		}
+
+		void persistNoteSnapshot({ keepalive, silent: true });
+	};
+
+	const handlePageHide = () => {
+		flushPendingNoteChanges(true);
+	};
+
+	const init = async () => {
+		loading = true;
+		try {
+			const res = await getNoteById(localStorage.token, id).catch((error) => {
+				toast.error(`${error}`);
+				return null;
+			});
+
+			messages = [];
+
+			if (res) {
+				note = normalizeNoteState(res);
+				files = note.data.files || [];
+				lastSavedSnapshot = getNoteSaveSignature();
+
+				if (note?.write_access) {
+					$socket?.emit('join-note', {
+						note_id: id,
+						auth: {
+							token: localStorage.token
+						}
+					});
+					$socket?.on('note-events', noteEventHandler);
+				}
+			} else {
+				goto('/');
+				return;
+			}
+		} finally {
+			loading = false;
+		}
 	};
 
 	let debounceTimeout: NodeJS.Timeout | null = null;
@@ -235,21 +318,22 @@
 		}
 
 		debounceTimeout = setTimeout(async () => {
-			const res = await updateNoteById(localStorage.token, id, {
-				title: note?.title === '' ? $i18n.t('Untitled') : note.title,
-				data: {
-					files: files
-				},
-				access_grants: note?.access_grants ?? []
-			}).catch((e) => {
-				toast.error(`${e}`);
-			});
-		}, 200);
+			debounceTimeout = null;
+			await persistNoteSnapshot();
+		}, 400);
 	};
 
 	$: if (id) {
 		init();
 	}
+
+	$: noteHasStructuredContent = Boolean(note?.data?.content?.json);
+	$: useCollaborativeEditor = Boolean(
+		note?.write_access && noteHasStructuredContent && $socket && $user
+	);
+	$: editorValue = noteHasStructuredContent
+		? note?.data?.content?.json
+		: note?.data?.content?.html || editorHtml;
 
 	function areContentsEqual(a, b) {
 		return JSON.stringify(a) === JSON.stringify(b);
@@ -871,11 +955,15 @@ Provide the enhanced notes in markdown format. Use markdown syntax for headings,
 		// dropzoneElement?.addEventListener('dragover', onDragOver);
 		// dropzoneElement?.addEventListener('drop', onDrop);
 		// dropzoneElement?.addEventListener('dragleave', onDragLeave);
+
+		window.addEventListener('pagehide', handlePageHide);
 	});
 
 	onDestroy(() => {
 		console.log('destroy');
 		$socket?.off('note-events', noteEventHandler);
+		window.removeEventListener('pagehide', handlePageHide);
+		flushPendingNoteChanges(true);
 
 		const dropzoneElement = document.getElementById('note-editor');
 
@@ -1215,11 +1303,12 @@ Provide the enhanced notes in markdown format. Use markdown syntax for headings,
 							bind:editor
 							id={`note-${note.id}`}
 							className="input-prose-sm px-0.5 h-[calc(100%-2rem)]"
-							json={true}
-							bind:value={note.data.content.json}
+							json={noteHasStructuredContent}
+							raw={!noteHasStructuredContent}
+							value={editorValue}
 							html={editorHtml}
 							documentId={`note:${note.id}`}
-							collaboration={true}
+							collaboration={useCollaborativeEditor}
 							socket={$socket}
 							user={$user}
 							dragHandle={true}
@@ -1243,12 +1332,17 @@ Provide the enhanced notes in markdown format. Use markdown syntax for headings,
 								}
 							}}
 							onChange={(content) => {
+								note.data.content.json = noteHasStructuredContent ? content.json : null;
 								note.data.content.html = content.html;
 								note.data.content.md = content.md;
 
 								if (editor) {
 									wordCount = editor.storage.characterCount.words();
 									charCount = editor.storage.characterCount.characters();
+								}
+
+								if (!useCollaborativeEditor) {
+									changeDebounceHandler();
 								}
 							}}
 							fileHandler={true}
