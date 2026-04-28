@@ -60,6 +60,10 @@
 	}
 
 	const scrollToTab = (tabId) => {
+		if (typeof document === 'undefined') {
+			return;
+		}
+
 		const tabElement = document.getElementById(tabId);
 		if (tabElement) {
 			tabElement.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'start' });
