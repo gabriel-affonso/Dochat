@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -1089,7 +1090,7 @@ def render_synthesis_markdown(
     return "\n".join(lines).strip()
 
 
-def persist_synthesis_note(
+async def persist_synthesis_note(
     request: Request,
     collection: KnowledgeModel,
     report_record,
@@ -1196,7 +1197,13 @@ def persist_synthesis_note(
     effective_status = final_status
 
     try:
-        upsert_linked_note_vector(request, collection, note, user=user)
+        await asyncio.to_thread(
+            upsert_linked_note_vector,
+            request,
+            collection,
+            note,
+            user,
+        )
     except Exception as exc:
         log.warning(
             "Synthesis note vector indexing skipped for collection_id=%s note_id=%s",
@@ -1578,7 +1585,7 @@ async def process_collection_synthesis_job(
         if report_record is None:
             return
 
-        note_id, note_warnings, status_value = persist_synthesis_note(
+        note_id, note_warnings, status_value = await persist_synthesis_note(
             request,
             collection,
             report_record,

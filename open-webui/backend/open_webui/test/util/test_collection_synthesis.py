@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -122,14 +123,16 @@ class CollectionSynthesisTestCase(unittest.TestCase):
             "upsert_linked_note_vector",
             side_effect=TimeoutError("Embedding generation timed out after 300 seconds"),
         ):
-            note_id, note_warnings, final_status = collection_synthesis.persist_synthesis_note(
-                request=SimpleNamespace(),
-                collection=collection,
-                report_record=report_record,
-                user=user,
-                report={"overview": "Resumo final."},
-                final_status=collection_synthesis.SYNTHESIS_COMPLETED_STATUS,
-                warnings=[],
+            note_id, note_warnings, final_status = asyncio.run(
+                collection_synthesis.persist_synthesis_note(
+                    request=SimpleNamespace(),
+                    collection=collection,
+                    report_record=report_record,
+                    user=user,
+                    report={"overview": "Resumo final."},
+                    final_status=collection_synthesis.SYNTHESIS_COMPLETED_STATUS,
+                    warnings=[],
+                )
             )
 
         insert_form = mock_insert.call_args.args[1]
@@ -193,14 +196,16 @@ class CollectionSynthesisTestCase(unittest.TestCase):
         ), patch.object(
             collection_synthesis, "upsert_linked_note_vector"
         ):
-            note_id, note_warnings, final_status = collection_synthesis.persist_synthesis_note(
-                request=SimpleNamespace(),
-                collection=collection,
-                report_record=report_record,
-                user=user,
-                report={"overview": "Resumo final."},
-                final_status=collection_synthesis.SYNTHESIS_COMPLETED_STATUS,
-                warnings=[],
+            note_id, note_warnings, final_status = asyncio.run(
+                collection_synthesis.persist_synthesis_note(
+                    request=SimpleNamespace(),
+                    collection=collection,
+                    report_record=report_record,
+                    user=user,
+                    report={"overview": "Resumo final."},
+                    final_status=collection_synthesis.SYNTHESIS_COMPLETED_STATUS,
+                    warnings=[],
+                )
             )
 
         update_form = mock_update.call_args.kwargs["form_data"]
