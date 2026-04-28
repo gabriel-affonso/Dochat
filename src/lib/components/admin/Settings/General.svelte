@@ -43,6 +43,7 @@
 	let adminConfig = null;
 	let webhookUrl = '';
 	let groups = [];
+	let loadError = '';
 
 	let banners: Banner[] = [];
 	const dochatAbout = DOCHAT_BRAND_CONTENT;
@@ -111,31 +112,42 @@
 		}
 	};
 
+	const loadSetting = async (label: string, loader: Function, fallback = null) => {
+		try {
+			return await loader();
+		} catch (error) {
+			console.error(`Failed to load admin setting: ${label}`, error);
+			loadError = $i18n.t('Failed to load settings');
+			toast.error(`${label}: ${error}`);
+			return fallback;
+		}
+	};
+
 	onMount(async () => {
 		if ($config?.features?.enable_version_update_check) {
 			checkForVersionUpdates();
 		}
 
-		await Promise.all([
-			(async () => {
-				adminConfig = await getAdminConfig(localStorage.token);
-			})(),
+		const [loadedAdminConfig, loadedWebhookUrl, loadedLdapServer, loadedGroups] = await Promise.all(
+			[
+				loadSetting('Admin config', () => getAdminConfig(localStorage.token)),
+				loadSetting('Webhook', () => getWebhookUrl(localStorage.token), ''),
+				loadSetting('LDAP server', () => getLdapServer(localStorage.token), LDAP_SERVER),
+				loadSetting('Groups', () => getGroups(localStorage.token), [])
+			]
+		);
 
-			(async () => {
-				webhookUrl = await getWebhookUrl(localStorage.token);
-			})(),
-			(async () => {
-				LDAP_SERVER = await getLdapServer(localStorage.token);
-			})(),
-			(async () => {
-				groups = await getGroups(localStorage.token);
-			})()
-		]);
+		adminConfig = loadedAdminConfig;
+		webhookUrl = loadedWebhookUrl ?? '';
+		LDAP_SERVER = loadedLdapServer ?? LDAP_SERVER;
+		groups = loadedGroups ?? [];
 
-		const ldapConfig = await getLdapConfig(localStorage.token);
-		ENABLE_LDAP = ldapConfig.ENABLE_LDAP;
+		const ldapConfig = await loadSetting('LDAP config', () => getLdapConfig(localStorage.token), {
+			ENABLE_LDAP: false
+		});
+		ENABLE_LDAP = Boolean(ldapConfig?.ENABLE_LDAP);
 
-		banners = await getBanners(localStorage.token);
+		banners = await loadSetting('Banners', () => getBanners(localStorage.token), []);
 	});
 </script>
 
@@ -848,6 +860,10 @@
 						<Banners bind:banners />
 					</div>
 				</div>
+			</div>
+		{:else if loadError}
+			<div class="text-sm text-red-500 dark:text-red-400">
+				{loadError}
 			</div>
 		{/if}
 	</div>
